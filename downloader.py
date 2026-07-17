@@ -1,9 +1,22 @@
 import os
+import re
 import sys
 import threading
+from urllib.parse import urljoin
 
 import requests
 import yt_dlp
+
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+OG_IMAGE_RE = re.compile(
+    r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\'][^>]+content=["\']([^"\']+)["\']'
+    r'|<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)["\']',
+    re.IGNORECASE,
+)
 
 
 def resource_path(relative):
@@ -124,12 +137,35 @@ class Downloader:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-    def download_direct(self, url, out_dir):
-        """Plain HTTP download for direct file links (images, or any other file type)."""
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    def download_direct(self, url, out_dir, _referer=None, _from_page=False):
+        """Plain HTTP download for direct file links (images, or any other file type).
+
+        If the link turns out to be a webpage rather than a file, this looks for the
+        page's main image (og:image / twitter:image meta tag) and downloads that instead.
+        """
+        headers = {
+            "User-Agent": BROWSER_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        if _referer:
+            headers["Referer"] = _referer
         with requests.get(url, headers=headers, stream=True, timeout=30) as r:
             r.raise_for_status()
             content_type = r.headers.get("Content-Type", "").split(";")[0].strip()
+
+            if content_type == "text/html" and not _from_page:
+                html = r.text
+                image_url = self._extract_page_image(html, url)
+                if image_url:
+                    self.progress(None, "That's a webpage - grabbing its main image instead...")
+                    self.log(f"Found image on page: {image_url}")
+                    return self.download_direct(image_url, out_dir, _referer=url, _from_page=True)
+                raise ValueError(
+                    "That link is a webpage, not a direct file, and no image could be found on it. "
+                    "Try right-clicking the actual image and choosing 'Copy image address'."
+                )
+
             total = int(r.headers.get("Content-Length", 0) or 0)
             filename = self._filename_for(url, content_type)
             path = os.path.join(out_dir, filename)
@@ -148,6 +184,14 @@ class Downloader:
                     else:
                         self.progress(None, f"Downloading... {downloaded / (1024 * 1024):.1f} MB")
             return path, content_type
+
+    @staticmethod
+    def _extract_page_image(html, base_url):
+        match = OG_IMAGE_RE.search(html)
+        if not match:
+            return None
+        image_url = match.group(1) or match.group(2)
+        return urljoin(base_url, image_url)
 
     def _filename_for(self, url, content_type):
         base = os.path.basename(url.split("?")[0].split("#")[0]) or "download"
