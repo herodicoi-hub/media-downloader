@@ -1,0 +1,64 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_extracted
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          $ffDir = Get-ChildItem ffmpeg_extracted | Select-Object -First 1
+          Copy-Item "$($ffDir.FullName)\bin\ffmpeg.exe" bin\
+          Copy-Item "$($ffDir.FullName)\bin\ffprobe.exe" bin\
+
+      - name: Download Real-ESRGAN (AI image upscaler)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip" -OutFile realesrgan.zip
+          Expand-Archive -Path realesrgan.zip -DestinationPath realesrgan_extracted
+          Copy-Item realesrgan_extracted\realesrgan-ncnn-vulkan.exe bin\
+          Copy-Item realesrgan_extracted\vcomp140.dll bin\
+          Copy-Item realesrgan_extracted\models bin\models -Recurse
+
+      - name: Verify bundled binaries
+        shell: pwsh
+        run: |
+          if (-not (Test-Path bin\ffmpeg.exe)) { throw "ffmpeg.exe missing" }
+          if (-not (Test-Path bin\ffprobe.exe)) { throw "ffprobe.exe missing" }
+          if (-not (Test-Path bin\realesrgan-ncnn-vulkan.exe)) { throw "realesrgan-ncnn-vulkan.exe missing" }
+          if (-not (Test-Path bin\models\realesrgan-x4plus.bin)) { throw "realesrgan-x4plus model missing" }
+          Get-ChildItem bin
+
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --windowed --name "MediaDownloader" --add-data "bin;bin" main.py
+
+      - name: Zip build output
+        shell: pwsh
+        run: Compress-Archive -Path dist\MediaDownloader\* -DestinationPath MediaDownloader-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaDownloader-windows
+          path: MediaDownloader-windows.zip
