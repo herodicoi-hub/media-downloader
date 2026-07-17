@@ -54,6 +54,7 @@ def ai_upscale(src_path, target_label, log=print):
             capture_output=True,
             text=True,
             timeout=600,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except Exception as e:
         log(f"AI upscale could not run ({e}), using fast resize instead.")
