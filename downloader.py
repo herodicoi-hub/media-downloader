@@ -32,12 +32,16 @@ VIDEO_QUALITY_OPTIONS = {
         "format_sort": ["fps", "res"],
     },
     "1080p": {
-        "format": "bv*[height<=1080]+ba/b[height<=1080]",
-        "format_sort": ["res", "fps"],
+        "format": "bv*+ba/b",
+        # "res:N" picks the closest resolution to N (preferring not to exceed it) using
+        # yt-dlp's orientation-aware size measure - unlike a plain height<=N filter, this
+        # still works on vertical/portrait video (TikTok, Shorts, Reels), where the raw
+        # "height" field is the long side, not the quality tier.
+        "format_sort": ["res:1080", "fps"],
     },
     "720p": {
-        "format": "bv*[height<=720]+ba/b[height<=720]",
-        "format_sort": ["res", "fps"],
+        "format": "bv*+ba/b",
+        "format_sort": ["res:720", "fps"],
     },
 }
 

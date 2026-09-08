@@ -1,3 +1,4 @@
 yt-dlp
 requests
 pillow
+curl_cffi>=0.10,<0.13
