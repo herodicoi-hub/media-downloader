@@ -9,6 +9,7 @@ from downloader import AUDIO_FORMAT_CODECS, VIDEO_QUALITY_OPTIONS, DownloadCance
 from upscaler import TARGET_LONG_SIDE, ai_upscale, fast_resize
 
 DEFAULT_DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Media Downloader")
+MAX_BATCH_LINKS = 10
 
 
 class App(tk.Tk):
@@ -31,11 +32,10 @@ class App(tk.Tk):
     def _build_ui(self):
         pad = {"padx": 10, "pady": 6}
 
-        url_frame = ttk.Frame(self)
+        url_frame = ttk.LabelFrame(self, text=f"Links (paste up to {MAX_BATCH_LINKS}, one per line)")
         url_frame.pack(fill="x", **pad)
-        ttk.Label(url_frame, text="Link:").pack(side="left")
-        self.url_var = tk.StringVar()
-        ttk.Entry(url_frame, textvariable=self.url_var).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        self.url_text = tk.Text(url_frame, height=4, wrap="none")
+        self.url_text.pack(fill="x", expand=True, padx=6, pady=6)
 
         type_frame = ttk.LabelFrame(self, text="What are you downloading?")
         type_frame.pack(fill="x", **pad)
@@ -190,9 +190,16 @@ class App(tk.Tk):
         self.after(100, self._poll_queue)
 
     def _start_download(self):
-        url = self.url_var.get().strip()
-        if not url:
-            messagebox.showwarning("Missing link", "Paste a link first.")
+        raw = self.url_text.get("1.0", "end")
+        urls = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not urls:
+            messagebox.showwarning("Missing link", "Paste at least one link first.")
+            return
+        if len(urls) > MAX_BATCH_LINKS:
+            messagebox.showwarning(
+                "Too many links",
+                f"You pasted {len(urls)} links. The maximum is {MAX_BATCH_LINKS} at a time.",
+            )
             return
         out_dir = self.folder_var.get().strip() or DEFAULT_DOWNLOAD_DIR
         try:
@@ -205,55 +212,84 @@ class App(tk.Tk):
         self._set_busy(True)
         self.progress["value"] = 0
         self.status_var.set("Starting...")
-        threading.Thread(target=self._run_download, args=(url, out_dir), daemon=True).start()
+        threading.Thread(target=self._run_batch, args=(urls, out_dir), daemon=True).start()
 
     def _stop_download(self):
         if self.downloader:
             self.downloader.cancel()
             self._log("Stopping...")
 
-    def _run_download(self, url, out_dir):
+    def _run_batch(self, urls, out_dir):
+        total = len(urls)
+        successes = 0
+        failures = []
+        cancelled = False
+        for idx, url in enumerate(urls, start=1):
+            if total > 1:
+                self._log(f"--- Link {idx} of {total}: {url} ---")
+            result = self._run_download(url, out_dir, idx, total)
+            if result == "ok":
+                successes += 1
+            elif result == "cancelled":
+                cancelled = True
+                break
+            else:
+                failures.append((url, result))
+
+        if cancelled:
+            self._log(f"Batch stopped. {successes} of {total} finished before cancel.")
+            self._set_progress(0, "Cancelled.")
+        elif failures:
+            self._log(f"Batch done: {successes} succeeded, {len(failures)} failed.")
+            for url, err in failures:
+                self._log(f"  FAILED: {url} -> {err}")
+            self._set_progress(100, f"Done with {len(failures)} failure(s).")
+        else:
+            self._log(f"Batch done: all {total} link(s) succeeded.")
+            self._set_progress(100, "Done.")
+        self._set_busy(False)
+
+    def _run_download(self, url, out_dir, idx=1, total=1):
         self.downloader = Downloader(self._log, self._set_progress)
         media_type = self.type_var.get()
+        prefix = f"[{idx}/{total}] " if total > 1 else ""
         try:
             if media_type == "Video":
                 quality = self.quality_var.get()
-                self._log(f"Downloading video ({quality})...")
+                self._log(f"{prefix}Downloading video ({quality})...")
                 self.downloader.download_video(url, out_dir, quality)
-                self._log("Video download complete.")
+                self._log(f"{prefix}Video download complete.")
             elif media_type == "Audio":
                 fmt = self.audio_fmt_var.get()
-                self._log(f"Downloading audio as {fmt}...")
+                self._log(f"{prefix}Downloading audio as {fmt}...")
                 self.downloader.download_audio(url, out_dir, fmt)
-                self._log("Audio download complete.")
+                self._log(f"{prefix}Audio download complete.")
             else:
-                self._log("Downloading file...")
+                self._log(f"{prefix}Downloading file...")
                 path, content_type = self.downloader.download_direct(url, out_dir)
-                self._log(f"Saved: {os.path.basename(path)}")
+                self._log(f"{prefix}Saved: {os.path.basename(path)}")
                 if self.upscale_var.get():
                     if content_type.startswith("image/") or path.lower().endswith(
                         (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
                     ):
                         target = self.upscale_target_var.get()
-                        self._set_progress(None, "Upscaling...")
+                        self._set_progress(None, f"{prefix}Upscaling...")
                         if self.upscale_method_var.get() == "AI upscale":
-                            self._log("Upscaling with AI (this can take a little while)...")
+                            self._log(f"{prefix}Upscaling with AI (this can take a little while)...")
                             result = ai_upscale(path, target, log=self._log)
                         else:
-                            self._log("Resizing...")
+                            self._log(f"{prefix}Resizing...")
                             result = fast_resize(path, target)
-                        self._log(f"Upscaled image saved: {os.path.basename(result)}")
+                        self._log(f"{prefix}Upscaled image saved: {os.path.basename(result)}")
                     else:
-                        self._log("Upscale skipped: the downloaded file isn't an image.")
-            self._set_progress(100, "Done.")
+                        self._log(f"{prefix}Upscale skipped: the downloaded file isn't an image.")
+            return "ok"
         except DownloadCancelled:
-            self._log("Cancelled.")
-            self._set_progress(0, "Cancelled.")
+            self._log(f"{prefix}Cancelled.")
+            return "cancelled"
         except Exception as e:
-            self._log(f"Error: {e}")
-            self._set_progress(0, "Failed.")
-        finally:
-            self._set_busy(False)
+            self._log(f"{prefix}Error: {e}")
+            return str(e)
 
 
 if __name__ == "__main__":
